@@ -49,8 +49,10 @@ namespace pumiinopenmc {
 
     void start_pumi_particles_in_0th_element(Omega_h::Mesh &mesh, pumiinopenmc::PPPS *ptcls);
 
-
-    PumiTally::~PumiTally() = default;
+    PumiTally::~PumiTally() {
+        pimpl.reset(nullptr);
+        Kokkos::finalize();
+    }
 
     // ------------------------------------------------------------------------------------------------//
     // * Struct for PumiParticleAtElemBoundary
