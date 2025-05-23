@@ -110,7 +110,7 @@ TEST_CASE("Test Impl Class Functions") {
   }
 
   //************************************ Checks Regarding Initializing Particle
-  //Locations ***********************//
+  // Locations ***********************//
   //*************************************************************************************************************//
 
   { // * Note: all 5 particles will start their journey as follows:
@@ -214,9 +214,10 @@ TEST_CASE("Test Impl Class Functions") {
 
   {                                           // not a check, just move
     std::vector<int8_t> flying(num_ptcls, 1); // reset them again to 1
-    p_pumi_tallyimpl->move_to_next_location(particle_destination.data(),
-                                            flying.data(), weights.data(),
-                                            particle_destination.size());
+    std::vector<int> group(num_ptcls, 0);
+    p_pumi_tallyimpl->move_to_next_location(
+        particle_destination.data(), flying.data(), weights.data(),
+        group.data(), particle_destination.size());
   }
 
   { // * Check if the particles correctly reaches element 4
@@ -293,6 +294,7 @@ TEST_CASE("Test Impl Class Functions") {
     Omega_h::HostWrite<double> next_positions(3 * num_ptcls);
     std::vector<int8_t> flying_flags(num_ptcls, 0);
     std::vector<double> particle_weights(num_ptcls, 1);
+    std::vector<int> group(num_ptcls, 0);
     for (int pid = 0; pid < num_ptcls; ++pid) {
       if (pid == 0) {
         next_positions[3 * pid] = 0.15;
@@ -319,7 +321,7 @@ TEST_CASE("Test Impl Class Functions") {
     }
     p_pumi_tallyimpl->move_to_next_location(
         next_positions.data(), flying_flags.data(), particle_weights.data(),
-        next_positions.size());
+        group.data(), next_positions.size());
     // ***********************************************************************************************************//
 
     { // * check new origins
@@ -366,7 +368,7 @@ TEST_CASE("Test Impl Class Functions") {
       //* particle 3s contributions will go to element 4 and 3
       //* particle 5's contribution will go to element 4 only
       //* segment lengths of 3 are: 0.8790232192610158 and 0.08793076822136835
-      //in 4 and 3 respectively
+      // in 4 and 3 respectively
       //* segment length of 5 is:b 0.552268050859363 in 4
       auto flux_local =
           p_pumi_tallyimpl->p_pumi_particle_at_elem_boundary_handler->flux_;

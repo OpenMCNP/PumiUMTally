@@ -37,9 +37,9 @@ struct TallyTimes {
 // ------------------------------------------------------------------------------------------------//
 // * Data structure for PumiPic
 // Particle: 0-origin, 1-destination, 2-particle_id,
-// 3-in_advance_particle_queue, 4-weight
+// 3-in_advance_particle_queue, 4-weight, 5-group
 typedef pumipic::MemberTypes<pumipic::Vector3d, pumipic::Vector3d, Omega_h::LO,
-                             Omega_h::I16, Omega_h::Real>
+                             Omega_h::I16, Omega_h::Real, int>
     PPParticle;
 typedef pumipic::ParticleStructure<PPParticle> PPPS;
 typedef Kokkos::DefaultExecutionSpace PPExeSpace;
@@ -91,7 +91,7 @@ struct PumiParticleAtElemBoundary {
   void finalizeAndWritePumiFlux(Omega_h::Mesh &full_mesh,
                                 const std::string &filename);
 
-  Omega_h::Reals normalizeFlux(Omega_h::Mesh &mesh);
+  void normalizeFlux(Omega_h::Mesh &mesh);
 
   void mark_initial_as(bool initial);
 
@@ -99,7 +99,7 @@ struct PumiParticleAtElemBoundary {
   void initialize_flux_array(size_t nelems, size_t nEgroups);
 
   bool initial_; // in initial run, flux is not tallied
-  // Dims: nelems, nEgroups, 2
+  // Dims: nelems, nEgroups, 3(flux, flux^2, standard deviation)
   Kokkos::View<Omega_h::Real ***> flux_;
   Omega_h::Write<Omega_h::Real> prev_xpoint_;
   Omega_h::Write<Omega_h::Real> total_tracklength_;
@@ -133,6 +133,7 @@ struct PumiTallyImpl {
   Omega_h::Write<Omega_h::Real> device_pos_buffer_;
   Omega_h::Write<Omega_h::I8> device_in_adv_que_;
   Omega_h::Write<Omega_h::Real> weights_;
+  Omega_h::Write<int> groups_;
 
   TallyTimes tally_times;
 
@@ -160,7 +161,7 @@ struct PumiTallyImpl {
                                     int64_t size);
 
   void move_to_next_location(double *particle_destinations, int8_t *flying,
-                             double *weights, int64_t size);
+                             double *weights, int *groups, int64_t size);
 
   void write_pumi_tally_mesh();
 
@@ -171,6 +172,8 @@ struct PumiTallyImpl {
   void copy_and_reset_flying_flag(int8_t *flying);
 
   void copy_weights(double *weights);
+
+  void copy_groups(int *groups);
 };
 
 PumiTallyImpl::PumiTallyImpl(std::string &mesh_filename, int64_t num_particles,
@@ -183,6 +186,7 @@ PumiTallyImpl::PumiTallyImpl(std::string &mesh_filename, int64_t num_particles,
   device_in_adv_que_ =
       Omega_h::Write<Omega_h::I8>(pumi_ps_size, 0, "device_in_adv_que");
   weights_ = Omega_h::Write<Omega_h::Real>(pumi_ps_size, 0.0, "weights");
+  groups_ = Omega_h::Write<int>(pumi_ps_size, 0, "groups");
 
   // todo can track lengths be here?
 
@@ -210,7 +214,7 @@ void PumiTallyImpl::initialize_particle_location(
 
 void PumiTallyImpl::move_to_next_location(double *particle_destinations,
                                           int8_t *flying, double *weights,
-                                          int64_t size) {
+                                          int *groups, int64_t size) {
   assert(size == pumi_ps_size * 3);
 
   // copy to device buffer
@@ -218,6 +222,7 @@ void PumiTallyImpl::move_to_next_location(double *particle_destinations,
   // copy fly to device buffer
   copy_and_reset_flying_flag(flying);
   copy_weights(weights);
+  copy_groups(groups);
 
   // copy position buffer ps
   auto particle_dest = pumipic_ptcls->get<1>();
@@ -293,6 +298,24 @@ void PumiTallyImpl::copy_weights(double *weights) {
   };
   pumipic::parallel_for(pumipic_ptcls.get(), copy_particle_weights,
                         "copy particle weights");
+}
+
+void PumiTallyImpl::copy_groups(int *groups) {
+  auto groups_l = groups_;
+  Kokkos::View<int *, Kokkos::HostSpace,
+               Kokkos::MemoryTraits<Kokkos::Unmanaged>>
+      host_groups_view(groups, pumi_ps_size);
+  Kokkos::View<int *, PPExeSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>
+      device_groups_view(groups_l.data(), groups_l.size());
+
+  Kokkos::deep_copy(device_groups_view, host_groups_view);
+  auto p_groups = pumipic_ptcls->get<5>();
+  auto copy_particle_groups =
+      PS_LAMBDA(const int &e, const int &pid, const int &mask) {
+    p_groups(pid) = groups_l[pid];
+  };
+  pumipic::parallel_for(pumipic_ptcls.get(), copy_particle_groups,
+                        "copy particle groups");
 }
 
 void PumiTallyImpl::search_initial_elements() { // assign the location to ptcl
@@ -420,11 +443,11 @@ void apply_boundary_condition(Omega_h::Mesh &mesh, PPPS *ptcls,
 
 void PumiParticleAtElemBoundary::initialize_flux_array(size_t nelems,
                                                        size_t nEgroups) {
-  Kokkos::resize(flux_, nelems, nEgroups, 2);
+  Kokkos::resize(flux_, nelems, nEgroups, 3);
   auto flux_l = flux_;
   OMEGA_H_CHECK(flux_l.extent(0) == nelems);
   OMEGA_H_CHECK(flux_l.extent(1) == nEgroups);
-  OMEGA_H_CHECK(flux_l.extent(2) == 2);
+  OMEGA_H_CHECK(flux_l.extent(2) == 3);
 }
 
 PumiParticleAtElemBoundary::PumiParticleAtElemBoundary(size_t nelems,
@@ -498,6 +521,7 @@ void PumiParticleAtElemBoundary::evaluateFlux(
   auto total_tracklength_l = total_tracklength_;
   auto in_flight = ptcls->get<3>();
   auto p_wgt = ptcls->get<4>();
+  auto p_groups = ptcls->get<5>();
   auto xpoints_l = xpoints; // todo shouldn't need it, so remove
 
   auto evaluate_flux =
@@ -531,15 +555,22 @@ void PumiParticleAtElemBoundary::evaluateFlux(
 
       Omega_h::Real contribution = segment_length * p_wgt(pid);
 
-      Kokkos::atomic_add(&flux(elem_ids[pid], 0, 0), contribution);
-      Kokkos::atomic_add(&flux(elem_ids[pid], 0, 1),
+      int group = p_groups(pid);
+      OMEGA_H_CHECK_PRINTF(
+          group >= 0 && group < flux.extent(1),
+          "ERROR: Group %d is out of bounds for flux array with "
+          "extent %lu\n",
+          group, flux.extent(1));
+
+      Kokkos::atomic_add(&flux(elem_ids[pid], group, 0), contribution);
+      Kokkos::atomic_add(&flux(elem_ids[pid], group, 1),
                          contribution * contribution);
     }
   };
   pumipic::parallel_for(ptcls, evaluate_flux, "flux evaluation loop");
 }
 
-Omega_h::Reals PumiParticleAtElemBoundary::normalizeFlux(Omega_h::Mesh &mesh) {
+void PumiParticleAtElemBoundary::normalizeFlux(Omega_h::Mesh &mesh) {
   const Omega_h::LO nelems = mesh.nelems();
   const auto &el2n = mesh.ask_down(Omega_h::REGION, Omega_h::VERT).ab2b;
   const auto &coords = mesh.coords();
@@ -549,10 +580,6 @@ Omega_h::Reals PumiParticleAtElemBoundary::normalizeFlux(Omega_h::Mesh &mesh) {
 
   Omega_h::Write<Omega_h::Real> tet_volumes(flux_.extent(0), -1.0,
                                             "tet_volumes");
-  Omega_h::Write<Omega_h::Real> normalized_flux(flux_.extent(0), -1.0,
-                                                "normalized flux");
-  Omega_h::Write<Omega_h::Real> normalized_flux_2(flux_.extent(0), -1.0,
-                                                  "normalized flux squared");
   Omega_h::Write<Omega_h::Real> sd(flux_.extent(0), -1.0, "sd");
 
   auto normalize_flux_with_volume = OMEGA_H_LAMBDA(Omega_h::LO elem_id) {
@@ -564,28 +591,37 @@ Omega_h::Reals PumiParticleAtElemBoundary::normalizeFlux(Omega_h::Mesh &mesh) {
     auto volume = Omega_h::simplex_size_from_basis(b);
 
     tet_volumes[elem_id] = volume;
-    normalized_flux[elem_id] =
-        flux(elem_id, 0, 0) / (volume * total_tracklength_l.size());
-    normalized_flux_2[elem_id] =
-        flux(elem_id, 0, 1) / (volume * volume * total_tracklength_l.size());
+    for (int g = 0; g < flux.extent(1); g++) {
+      flux(elem_id, g, 0) /= (volume * total_tracklength_l.size());
+      flux(elem_id, g, 1) /= (volume * volume * total_tracklength_l.size());
 
-    // calculate standard deviation FIXME this is not correct, needs number of
-    // iterations
-    sd[elem_id] =
-        Kokkos::sqrt(normalized_flux_2[elem_id] -
-                     normalized_flux[elem_id] * normalized_flux[elem_id]);
+      // calculate standard deviation FIXME this is not correct, needs number of
+      // iterations
+      flux(elem_id, g, 2) = Kokkos::sqrt(
+          flux(elem_id, g, 1) - flux(elem_id, g, 0) * flux(elem_id, g, 0));
+    }
   };
   Omega_h::parallel_for(tet_volumes.size(), normalize_flux_with_volume,
                         "normalize flux");
 
   mesh.add_tag(Omega_h::REGION, "volume", 1, Omega_h::Reals(tet_volumes));
-  return {normalized_flux};
 }
 
 void PumiParticleAtElemBoundary::finalizeAndWritePumiFlux(
     Omega_h::Mesh &full_mesh, const std::string &filename) {
-  const auto &normalized_flux = normalizeFlux(full_mesh);
-  full_mesh.add_tag(Omega_h::REGION, "flux", 1, normalized_flux);
+  normalizeFlux(full_mesh);
+  auto flux = flux_;
+  int num_groups = flux.extent(1);
+  Omega_h::Write<Omega_h::Real> normalized_flux(flux.extent(0) * num_groups,
+                                                0.0, "normalized_flux");
+  // copy flux to normalized_flux
+  auto copy_flux = OMEGA_H_LAMBDA(Omega_h::LO elem_id) {
+    for (int g = 0; g < flux.extent(1); g++) {
+      normalized_flux[elem_id * num_groups + g] = flux(elem_id, g, 0);
+    }
+  };
+  full_mesh.add_tag(Omega_h::REGION, "flux", num_groups,
+                    Omega_h::Reals(normalized_flux));
   Omega_h::vtk::write_parallel(filename, &full_mesh, 3);
 }
 
@@ -815,10 +851,11 @@ void PumiTally::initialize_particle_location(double *init_particle_positions,
 
 void PumiTally::move_to_next_location(double *particle_destinations,
                                       int8_t *flying, double *weights,
-                                      int64_t size) {
+                                      int *groups, int64_t size) {
   auto start_time = std::chrono::steady_clock::now();
 
-  pimpl->move_to_next_location(particle_destinations, flying, weights, size);
+  pimpl->move_to_next_location(particle_destinations, flying, weights, groups,
+                               size);
 
   std::chrono::duration<double> elapsed_seconds =
       std::chrono::steady_clock::now() - start_time;
