@@ -32,7 +32,8 @@ public:
   // Get the new destination of the particles and move the particles to the new
   // destination
   void move_to_next_location(double *particle_destinations, int8_t *flying,
-                             double *weights, int *groups, int64_t size);
+                             double *weights, int *groups, int *material_ids,
+                             int64_t size);
 
   // Normalize the tally and write the tally array to vtk file
   // Future: send the tally to openmc

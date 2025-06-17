@@ -215,9 +215,10 @@ TEST_CASE("Test Impl Class Functions") {
   {                                           // not a check, just move
     std::vector<int8_t> flying(num_ptcls, 1); // reset them again to 1
     std::vector<int> group(num_ptcls, 0);
+    std::vector<int> materials_ids(num_ptcls, 0); // not used
     p_pumi_tallyimpl->move_to_next_location(
         particle_destination.data(), flying.data(), weights.data(),
-        group.data(), particle_destination.size());
+        group.data(), materials_ids.data(), particle_destination.size());
   }
 
   { // * Check if the particles correctly reaches element 4
@@ -295,6 +296,7 @@ TEST_CASE("Test Impl Class Functions") {
     std::vector<int8_t> flying_flags(num_ptcls, 0);
     std::vector<double> particle_weights(num_ptcls, 1);
     std::vector<int> group(num_ptcls, 0);
+    std::vector<int> materials_ids(num_ptcls, 0); // not used
     for (int pid = 0; pid < num_ptcls; ++pid) {
       if (pid == 0) {
         next_positions[3 * pid] = 0.15;
@@ -321,7 +323,7 @@ TEST_CASE("Test Impl Class Functions") {
     }
     p_pumi_tallyimpl->move_to_next_location(
         next_positions.data(), flying_flags.data(), particle_weights.data(),
-        group.data(), next_positions.size());
+        group.data(), materials_ids.data(), next_positions.size());
     // ***********************************************************************************************************//
 
     { // * check new origins
